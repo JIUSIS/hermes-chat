@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 import 'models/message.dart';
 import 'api_client.dart';
@@ -21,6 +22,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _sessionId;
   bool _isLoading = false;
   bool _apiReady = false;
+  String _statusText = ''; // 思考中 / 调用工具: xxx
 
   @override
   void initState() {
@@ -45,39 +47,54 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _apiReady = ok);
   }
 
-  void _sendMessage() async {
+  void _sendMessage({String? filePath, String? fileName}) async {
     final text = _textController.text.trim();
-    if (text.isEmpty || _isLoading) return;
+    final hasFile = filePath != null;
+    if (text.isEmpty && !hasFile) return;
+    if (_isLoading) return;
 
     setState(() {
-      _messages.add(Message(text: text, isUser: true));
+      _messages.add(Message(
+        text: hasFile ? '[$fileName] ${text.isNotEmpty ? text : ""}' : text,
+        isUser: true,
+      ));
       _isLoading = true;
+      _statusText = '思考中...';
     });
     _textController.clear();
     _scrollToBottom();
 
     try {
-      final response = await HermesApi.sendMessage(
-        text: text,
+      final (response, newSid) = await HermesApi.sendMessage(
+        text: text.isNotEmpty ? text : '请分析这个文件',
         sessionId: _sessionId,
+        filePath: filePath,
+        onStatus: (status) {
+          setState(() {
+            if (status.status == 'thinking') {
+              _statusText = '思考中...';
+            } else if (status.status == 'calling_tool') {
+              _statusText = '调用工具: ${status.toolName ?? "..."}';
+            }
+          });
+        },
       );
 
-      // 从 API 响应提取 session_id
-      final data = response; // API 直接返回 response 字符串
-      if (_sessionId == null) {
-        // 需要从首次 HTTP 响应体获取 session_id
-        await _checkApi(); // 暂时用健康检查代替
+      if (newSid != null && _sessionId == null) {
+        await _saveSession(newSid);
       }
 
       setState(() {
         _messages.add(Message(text: response, isUser: false));
         _isLoading = false;
+        _statusText = '';
       });
       _scrollToBottom();
     } catch (e) {
       setState(() {
-        _messages.add(Message(text: '连接失败: ${e.toString()}', isUser: false));
+        _messages.add(Message(text: '连接失败: $e', isUser: false));
         _isLoading = false;
+        _statusText = '';
       });
     }
   }
@@ -85,38 +102,21 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _pickImage(ImageSource source) async {
     final XFile? image = await _imagePicker.pickImage(
       source: source,
-      maxWidth: 1024,
-      maxHeight: 1024,
+      maxWidth: 2048,
+      maxHeight: 2048,
     );
     if (image == null) return;
+    _sendMessage(filePath: image.path, fileName: '图片');
+  }
 
-    setState(() {
-      _messages.add(Message(
-        text: '[图片]',
-        isUser: true,
-        imagePath: image.path,
-      ));
-      _isLoading = true;
-    });
-    _scrollToBottom();
+  Future<void> _pickFile() async {
+    final result = await FilePicker.platform.pickFiles();
+    if (result == null || result.files.isEmpty) return;
 
-    try {
-      final response = await HermesApi.sendMessage(
-        text: '请描述这张图片的内容',
-        sessionId: _sessionId,
-        imagePath: image.path,
-      );
-      setState(() {
-        _messages.add(Message(text: response, isUser: false));
-        _isLoading = false;
-      });
-      _scrollToBottom();
-    } catch (e) {
-      setState(() {
-        _messages.add(Message(text: '图片发送失败: ${e.toString()}', isUser: false));
-        _isLoading = false;
-      });
-    }
+    final file = result.files.first;
+    if (file.path == null) return;
+
+    _sendMessage(filePath: file.path, fileName: file.name);
   }
 
   void _scrollToBottom() {
@@ -124,7 +124,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+          duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
         );
       }
@@ -137,176 +137,110 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: const Text('Hermes Chat'),
         actions: [
-          if (!_apiReady)
-            const Padding(
-              padding: EdgeInsets.only(right: 12),
-              child: Icon(Icons.cloud_off, color: Colors.red),
-            ),
-          if (_apiReady)
-            const Padding(
-              padding: EdgeInsets.only(right: 12),
-              child: Icon(Icons.cloud_done, color: Colors.green),
-            ),
-          if (_isLoading)
-            const Padding(
-              padding: EdgeInsets.only(right: 12),
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
+          Icon(_apiReady ? Icons.cloud_done : Icons.cloud_off,
+              color: _apiReady ? Colors.green : Colors.red),
+          const SizedBox(width: 12),
         ],
       ),
       body: Column(
         children: [
           Expanded(
-            child: _messages.isEmpty
-                ? const Center(
-                    child: Text(
-                      '和 Hermes 聊点什么吧',
-                      style: TextStyle(color: Colors.grey, fontSize: 16),
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.all(12),
+              itemCount: _messages.length + (_isLoading ? 1 : 0),
+              itemBuilder: (context, index) {
+                // 加载指示器
+                if (_isLoading && index == _messages.length) {
+                  return Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      margin: const EdgeInsets.only(top: 8, bottom: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            width: 14, height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              _statusText.isNotEmpty ? _statusText : '...',
+                              style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  )
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.all(12),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      return _buildMessageBubble(_messages[index]);
-                    },
-                  ),
-          ),
-          _buildInputBar(),
-        ],
-      ),
-    );
-  }
+                  );
+                }
 
-  Widget _buildMessageBubble(Message msg) {
-    final alignment = msg.isUser
-        ? CrossAxisAlignment.end
-        : CrossAxisAlignment.start;
-    final color = msg.isUser
-        ? Colors.blue[100]
-        : Colors.grey[200];
-    final radius = msg.isUser
-        ? const BorderRadius.only(
-            topLeft: Radius.circular(16),
-            topRight: Radius.circular(16),
-            bottomLeft: Radius.circular(16),
-          )
-        : const BorderRadius.only(
-            topLeft: Radius.circular(16),
-            topRight: Radius.circular(16),
-            bottomRight: Radius.circular(16),
-          );
-
-    return Column(
-      crossAxisAlignment: alignment,
-      children: [
-        Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(color: color, borderRadius: radius),
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.75,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (msg.imagePath != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.file(
-                      File(msg.imagePath!),
-                      width: 200,
-                      fit: BoxFit.cover,
+                final msg = _messages[index];
+                final isUser = msg.isUser;
+                return Align(
+                  alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 4, bottom: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.of(context).size.width * 0.75,
                     ),
+                    decoration: BoxDecoration(
+                      color: isUser ? Colors.blue.shade100 : Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Text(msg.text, style: const TextStyle(fontSize: 15)),
                   ),
-                ),
-              Text(
-                msg.text,
-                style: const TextStyle(fontSize: 15),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildInputBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(13),
-            blurRadius: 4,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.image_outlined),
-              onPressed: () => _showImagePickerOptions(),
-            ),
-            Expanded(
-              child: TextField(
-                controller: _textController,
-                decoration: const InputDecoration(
-                  hintText: '输入消息...',
-                  border: InputBorder.none,
-                ),
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _sendMessage(),
-                maxLines: 4,
-                minLines: 1,
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.send),
-              onPressed: _isLoading ? null : _sendMessage,
-              color: Colors.blue,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showImagePickerOptions() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('拍照'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.camera);
+                );
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('从相册选择'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.gallery);
-              },
+          ),
+          // 输入栏
+          SafeArea(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 2)],
+              ),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.attach_file),
+                    onPressed: _isLoading ? null : _pickFile,
+                    tooltip: '发送文件',
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.image),
+                    onPressed: _isLoading ? null : () => _pickImage(ImageSource.gallery),
+                    tooltip: '发送图片',
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _textController,
+                      enabled: !_isLoading,
+                      decoration: const InputDecoration(
+                        hintText: '输入消息...',
+                        border: InputBorder.none,
+                      ),
+                      onSubmitted: (_) => _sendMessage(),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.send),
+                    onPressed: _isLoading ? null : () => _sendMessage(),
+                  ),
+                ],
+              ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
