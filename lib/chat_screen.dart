@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 import 'models/message.dart';
 import 'api_client.dart';
@@ -109,15 +108,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _sendMessage(filePath: image.path, fileName: '图片');
   }
 
-  Future<void> _pickFile() async {
-    final result = await FilePicker.platform.pickFiles();
-    if (result == null || result.files.isEmpty) return;
 
-    final file = result.files.first;
-    if (file.path == null) return;
-
-    _sendMessage(filePath: file.path, fileName: file.name);
-  }
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -211,11 +202,6 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               child: Row(
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.attach_file),
-                    onPressed: _isLoading ? null : _pickFile,
-                    tooltip: '发送文件',
-                  ),
                   IconButton(
                     icon: const Icon(Icons.image),
                     onPressed: _isLoading ? null : () => _pickImage(ImageSource.gallery),
