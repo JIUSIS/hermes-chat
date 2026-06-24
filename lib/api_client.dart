@@ -8,7 +8,9 @@ class TaskStatus {
   final String? response;
   final String? toolName;
 
-  TaskStatus({required this.status, this.response, this.toolName});
+  final String? sessionId;
+
+  TaskStatus({required this.status, this.response, this.toolName, this.sessionId});
 
   factory TaskStatus.fromJson(Map<String, dynamic> json) {
     return TaskStatus(
