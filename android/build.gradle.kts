@@ -23,3 +23,16 @@ tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
 
+
+subprojects {
+    plugins.withId("com.android.application") {
+        android {
+            compileSdk = 36
+        }
+    }
+    plugins.withId("com.android.library") {
+        android {
+            compileSdk = 36
+        }
+    }
+}
