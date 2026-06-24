@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.hermes.hermes_chat"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
     buildToolsVersion = "36.0.0"
 
