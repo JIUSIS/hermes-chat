@@ -15,6 +15,7 @@ class TaskStatus {
       status: json['status'] ?? 'thinking',
       response: json['response'],
       toolName: json['tool_name'],
+      sessionId: json['session_id'],
     );
   }
 }
